@@ -1,4 +1,4 @@
-@echo off
+  @echo off
 setlocal enabledelayedexpansion
 
 set /p "=Establishing connection" <nul
@@ -227,6 +227,89 @@ if not defined redscript_missing (
 
 call :CheckVCVersion "!VC_VERSION!"
 
+REM Check for CPU and GPU
+echo. >> "%output_file%"
+echo CPUs found: >> "%output_file%"
+wmic cpu get Name | findstr /i /r "Intel.*Core AMD.*Ryzen" | findstr /r /v "^$" >> "%output_file%"
+echo GPUs found: >> "%output_file%"
+wmic path Win32_VideoController get Name | findstr /i "NVIDIA AMD Radeon" | findstr /r /v "^$" >> "%output_file%"
+
+REM Check for driver version
+set "DriverVersion=Not Found"
+for /f "tokens=3" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000" /v DriverVersion ^| find "DriverVersion"') do (
+    set "DriverVersion=%%a"
+)
+
+if "%DriverVersion%" NEQ "Not Found" (
+    set "CleanVersion=%DriverVersion:.=%"
+    set "LastFive=!CleanVersion:~-5!"
+    set /a Major=LastFive / 100
+    set /a Minor=LastFive %% 100
+    set "ConvVersion=!Major!.!Minor!"
+
+    echo GPU Driver Version: %DriverVersion% ^(!ConvVersion!^) >> "%output_file%"
+) else (
+    REM Check AMD if NVIDIA not found
+    for /f "tokens=3" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000" /v Catalyst_Version ^| find "Catalyst_Version"') do (
+        set "DriverVersion=%%a"
+    )
+    echo Driver Version: %DriverVersion% >> "%output_file%"
+)
+
+REM Check for memory OC
+set "checked=false"
+
+for /f "skip=1 tokens=1,2" %%A in ('wmic memorychip get ConfiguredClockSpeed^,Speed ^| findstr /r /v "^$"') do (
+    if "!checked!"=="false" (
+        set "Configured=%%A"
+        set "Default=%%B"
+
+        if !Configured! gtr !Default! (
+            set "XMP=Yes"
+        ) else (
+            set "XMP=No"
+        )
+
+        echo Memory Overclocking: !XMP! ^(default: !Default! MHz; configured: !Configured! MHz^) >> "%output_file%"
+        set "checked=true"
+    )
+)
+
+
+REM Check Hardware Accelerated Graphics Scheduling status
+set "RegPath=HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers"
+set "RegValue=HwSchMode"
+
+reg query "%RegPath%" /v "%RegValue%" >nul 2>&1
+
+if errorlevel 1 (
+    echo Hardware Accelerated Graphics Scheduling: Not Found >> "%output_file%"
+) else (
+    for /f "skip=2 tokens=3" %%a in ('reg query "%RegPath%" /v "%RegValue%"') do (
+        if "%%a"=="0x2" (
+            echo Hardware Accelerated Graphics Scheduling: Yes >> "%output_file%"
+        ) else if "%%a"=="0x1" (
+            echo Hardware Accelerated Graphics Scheduling: No >> "%output_file%"
+        ) else (
+            echo Hardware Accelerated Graphics Scheduling: Unknown value (%%a) >> "%output_file%"
+        )
+    )
+)
+
+REM Windows Release
+for /f "tokens=3" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v DisplayVersion ^| find "DisplayVersion"') do (
+    echo Windows Release: %%a >> "%output_file%"
+)
+
+REM Check for NotSoGoodDrawDistance (NSGDD)
+dir /b "%CYBERPUNKDIR%\archive\pc\mod\#NotSoGoodDrawDistance.xl" >nul 2>&1
+
+if %errorlevel%==0 (
+    echo Using NotSoGoodDrawDistance: YES >> "%output_file%"
+) else (
+    echo Using NotSoGoodDrawDistance: NO >> "%output_file%"
+)
+
 REM Parse through all files ending with .log, excluding those with .number.log pattern
 echo. >> "%output_file%" 
 echo ======================================================== >> "%output_file%"
@@ -234,11 +317,11 @@ echo Successfully Breached: !CYBERPUNKDIR! >> "%output_file%"
 echo The following log files have errors: >> "%output_file%"
 echo ======================================================== >> "%output_file%"
 
-for /R "!CYBERPUNKDIR!" %%F in (*.log *log.txt) do (
+for /R "%CYBERPUNKDIR%" %%F in (*.log *log.txt) do (
     set "filename=%%~nxF"
     setlocal enabledelayedexpansion
     set exclude=false
-    
+
 REM  Check if the file name contains two dots or matches the date pattern
     echo "!filename!" | findstr /R /C:".*\..*\.." >nul
     if !errorlevel! equ 0 (
@@ -258,12 +341,12 @@ REM  Process non-excluded log files
         for /F "delims=" %%L in ('findstr /I "exception error failed" "%%F" ^| findstr /V /I /C:"Failed to create record" ^| findstr /V /I /C:"[AMM Error] Non-localized string found" ^| findstr /V /I /C:"reason: Record already exists" ^| findstr /V /I /C:"[Info]"') do (
             set has_error=true
         )
-        
+		
         REM If error is found, print filepath and process the error lines
         if "!has_error!"=="true" (
             echo. >> "%output_file%"
-            set "relative_path=%%~dpF"
-            set "relative_path=!relative_path:!CYBERPUNKDIR!=!"
+			set "relative_path=%%~dpF"
+			set "relative_path=!relative_path:%CYBERPUNKDIR%=!"
             echo !relative_path:~1!%%~nxF >> "%output_file%"
             echo. >> "%output_file%"
 
@@ -354,4 +437,3 @@ REM Returns 0 if OK, 1 if too old or not found.
     )
     endlocal
     goto :eof
-    
